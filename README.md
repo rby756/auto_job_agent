@@ -80,6 +80,60 @@ auto_job_agent/
 
 ---
 
+## 🧪 Testing
+
+The project includes a comprehensive test suite with unit, integration, and API tests. Here's how to run them:
+
+### Prerequisites
+- Python 3.10+
+- Tesseract OCR (`sudo apt install tesseract-ocr` on Ubuntu/Debian)
+- Git
+
+### Running Tests
+
+1. **Run all tests**:
+   ```bash
+   pytest -v
+   ```
+
+2. **Run specific test types**:
+   ```bash
+   # Run unit tests
+   pytest tests/unit -v
+   
+   # Run integration tests
+   pytest tests/integration -v
+   
+   # Run API tests (requires the API server to be running)
+   pytest tests/api -v
+   ```
+
+3. **Run with coverage report**:
+   ```bash
+   pytest --cov=auto_job_apply --cov-report=term-missing
+   ```
+
+4. **Run API tests with server** (in separate terminals):
+   ```bash
+   # Terminal 1: Start the FastAPI server
+   uvicorn api_app.main:app --reload
+   
+   # Terminal 2: Run API tests
+   pytest tests/api -v
+   ```
+
+### Test Structure
+
+- `tests/unit/`: Unit tests for individual components
+  - `ocr/`: Tests for OCR processing
+  - `rag/`: Tests for RAG components
+
+- `tests/integration/`: Integration tests for component interactions
+  - `test_rag_integration.py`: Tests the complete RAG pipeline
+
+- `tests/api/`: API endpoint tests
+  - `test_jobs_api.py`: Tests for job matching and ingestion endpoints
+
 ## ⚡ Quick Start
 
 ### Prerequisites
@@ -103,9 +157,11 @@ auto_job_agent/
 
 3. **Install dependencies**
    ```bash
-   pip install -r requirements-api.txt
-   pip install -r requirements-rag.txt
-   pip install streamlit
+   # Install all requirements including test dependencies
+   pip install -r requirements.txt
+   
+   # Install Tesseract OCR (Ubuntu/Debian)
+   # sudo apt install tesseract-ocr
    ```
 
 4. **Start the API server**

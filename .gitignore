@@ -248,3 +248,17 @@ $RECYCLE.BIN/
 *.pk8
 *.pkcs8
 *.p10
+
+
+data/sample_jds/ai_ml_engineer.txt
+data/sample_jds/ai_research_scientist.txt
+data/sample_jds/backend_engineer.txt
+data/sample_jds/cybersecurity_specialist.txt
+data/sample_jds/data_analyst.txt
+data/sample_jds/devops_engineer.txt
+data/sample_jds/frontend_developer.txt
+data/sample_jds/machine_learning_engineer.txt
+data/sample_jds/mlops_engineer.txt
+data/sample_jds/ux_designer.txt
+notebooks/chroma_db_rag_tutorial/
+notebooks/resume_matching.ipynb

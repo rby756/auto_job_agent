@@ -1,8 +1,13 @@
 """
 Vector store module for handling job description embeddings and similarity search.
 """
-from typing import List, Dict, Any, Optional
+import logging
 import os
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Union
+
+# Set up logging
+logger = logging.getLogger(__name__)
 import pickle
 from pathlib import Path
 import numpy as np
@@ -19,6 +24,7 @@ class JobVectorStore:
             model_name: Name of the sentence transformer model to use
             persist_dir: Directory to store the vector store
         """
+        self.model_name = model_name
         self.model = SentenceTransformer(model_name)
         self.embedding_dim = self.model.get_sentence_embedding_dimension()
         self.index = None
@@ -98,43 +104,97 @@ class JobVectorStore:
                 
         return results
     
-    def save(self, path: Optional[str] = None):
-        """Save the vector store to disk."""
+    def save(self, path: Optional[Union[str, Path]] = None):
+        """
+        Save the vector store to disk.
+        
+        Args:
+            path: Optional path to save the vector store. If None, uses the persist_dir.
+        """
         if path is None:
-            path = self.persist_dir / "job_vector_store.pkl"
+            path = self.persist_dir / "job_descriptions.pkl"
+        else:
+            path = Path(path)
             
-        # Create directory if it doesn't exist
-        path = Path(path)
+        # Ensure parent directory exists
         path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Save FAISS index
-        if self.index is not None:
-            faiss.write_index(self.index, str(path) + ".index")
-            
+        # Prepare data to save
+        data = {
+            'model_name': self.model_name,
+            'job_metadata': self.job_metadata
+        }
+        
         # Save metadata
-        with open(path, 'wb') as f:
-            pickle.dump({
-                'job_metadata': self.job_metadata,
-                'model_name': self.model_name,
-                'embedding_dim': self.embedding_dim
-            }, f)
+        try:
+            with open(path, 'wb') as f:
+                pickle.dump(data, f)
+            logger.info(f"Saved vector store metadata to {path}")
+            
+            # Save FAISS index if it exists
+            if self.index is not None:
+                index_path = str(path) + ".index"
+                faiss.write_index(self.index, index_path)
+                logger.info(f"Saved FAISS index to {index_path}")
+                
+        except Exception as e:
+            logger.error(f"Failed to save vector store: {str(e)}")
+            raise
     
     @classmethod
-    def load(cls, path: str):
-        """Load a vector store from disk."""
+    def load(cls, path: Union[str, Path]) -> 'JobVectorStore':
+        """
+        Load a JobVectorStore from disk.
+        
+        Args:
+            path: Path to the saved vector store
+            
+        Returns:
+            Loaded JobVectorStore instance
+        """
         path = Path(path)
         
-        # Load metadata
-        with open(path, 'rb') as f:
-            data = pickle.load(f)
+        try:
+            # Load metadata
+            with open(path, 'rb') as f:
+                data = pickle.load(f)
+                
+            # Get model name from data or use default
+            model_name = data.get('model_name')
             
-        # Create new instance
-        instance = cls(model_name=data['model_name'])
-        instance.job_metadata = data['job_metadata']
-        
-        # Load FAISS index if it exists
-        index_path = str(path) + ".index"
-        if os.path.exists(index_path):
-            instance.index = faiss.read_index(index_path)
+            # If model_name is None or 'unknown', use the default model
+            if not model_name or model_name == 'unknown':
+                logger.warning(f"Invalid model name '{model_name}' found, using default model")
+                model_name = 'BAAI/bge-small-en-v1.5'
             
-        return instance
+            # Create new instance with the correct model
+            try:
+                instance = cls(model_name=model_name)
+            except Exception as e:
+                logger.error(f"Failed to load model '{model_name}': {str(e)}. Using default model.")
+                instance = cls()  # Use default model
+            
+            # Update metadata
+            instance.job_metadata = data.get('job_metadata', [])
+            
+            # Load FAISS index if it exists
+            index_path = str(path) + ".index"
+            if os.path.exists(index_path):
+                try:
+                    instance.index = faiss.read_index(index_path)
+                    logger.info(f"Successfully loaded FAISS index from {index_path}")
+                except Exception as e:
+                    logger.error(f"Failed to load FAISS index: {str(e)}")
+                    instance.index = None
+            else:
+                logger.warning(f"FAISS index not found at {index_path}")
+                instance.index = None
+                
+            logger.info(f"Loaded vector store with {len(instance.job_metadata)} jobs")
+            return instance
+            
+        except Exception as e:
+            logger.error(f"Error loading vector store from {path}: {str(e)}")
+            # Return a new instance if loading fails
+            logger.info("Returning a new vector store instance")
+            return cls()

@@ -7,25 +7,22 @@ from typing import List, Dict, Any, Optional, Union
 import logging
 from tqdm import tqdm
 
-from .retriever import VectorRetriever
-from .embedder import TextEmbedder
+from .vector_store import JobVectorStore
 
 logger = logging.getLogger(__name__)
 
 class JobIngestor:
-    def __init__(self, retriever: Optional[VectorRetriever] = None, 
-                 embedder: Optional[TextEmbedder] = None):
+    def __init__(self, vector_store: Optional[JobVectorStore] = None):
         """
-        Initialize the job ingestor with a vector retriever.
+        Initialize the job ingestor with a vector store.
         
         Args:
-            retriever: Optional pre-initialized vector retriever
-            embedder: Optional pre-initialized text embedder
+            vector_store: Optional pre-initialized vector store
         """
-        if retriever is None:
-            self.retriever = VectorRetriever(embedder=embedder)
+        if vector_store is None:
+            self.vector_store = JobVectorStore()
         else:
-            self.retriever = retriever
+            self.vector_store = vector_store
     
     def ingest_directory(self, dir_path: Union[str, Path], file_ext: str = '.txt') -> int:
         """
@@ -64,55 +61,60 @@ class JobIngestor:
                 logger.error(f"Error processing {file_path}: {str(e)}")
                 continue
                 
-        # Add jobs to retriever
+        # Add jobs to vector store
         if job_texts:
-            self.retriever.add_documents(job_texts, metadata_list)
+            self.vector_store.add_jobs(job_texts, metadata_list)
             
         return len(job_texts)
     
-    def save_retriever(self, path: Optional[str] = None):
+    def save_vector_store(self, path: Optional[str] = None):
         """
-        Save the retriever to disk.
+        Save the vector store to disk.
         
         Args:
-            path: Path to save the retriever
+            path: Path to save the vector store
         """
         if path is None:
-            raise ValueError("Path must be provided to save the retriever")
-        self.retriever.save(path)
+            raise ValueError("Path must be provided to save the vector store")
+        self.vector_store.save(path)
         
-    def get_retriever(self) -> VectorRetriever:
+    def get_vector_store(self) -> JobVectorStore:
         """
-        Get the underlying vector retriever.
+        Get the underlying vector store.
         
         Returns:
-            The VectorRetriever instance
+            The JobVectorStore instance
         """
-        return self.retriever
+        return self.vector_store
 
 
 def ingest_jobs(
     input_dir: Union[str, Path],
     output_path: Optional[Union[str, Path]] = None,
-    file_ext: str = '.txt',
-    embedder: Optional[TextEmbedder] = None
-) -> VectorRetriever:
+    file_ext: str = '.txt'
+) -> List[Dict[str, Any]]:
     """
-    Helper function to ingest jobs from a directory.
+    Ingest job descriptions from a directory and return the list of jobs.
     
     Args:
         input_dir: Directory containing job description files
         output_path: Optional path to save the vector store
         file_ext: File extension to look for (e.g., '.txt')
-        embedder: Optional pre-initialized text embedder
         
     Returns:
-        The populated VectorRetriever instance
+        List of dictionaries containing job texts and metadata
     """
-    ingestor = JobIngestor(embedder=embedder)
+    ingestor = JobIngestor()
     count = ingestor.ingest_directory(input_dir, file_ext=file_ext)
     
-    if count > 0 and output_path:
-        ingestor.save_retriever(output_path)
-        
-    return ingestor.get_retriever()
+    if output_path:
+        ingestor.save_vector_store(output_path)
+        logger.info(f"Ingested {count} jobs and saved vector store to {output_path}")
+    else:
+        logger.info(f"Ingested {count} jobs (not saved to disk)")
+    
+    # Return the list of jobs with their metadata
+    return [
+        {"text": job_meta.get("text", ""), **job_meta}
+        for job_meta in ingestor.vector_store.job_metadata
+    ]

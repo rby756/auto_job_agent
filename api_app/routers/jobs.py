@@ -2,17 +2,19 @@
 Jobs Router for handling job matching and ingestion.
 """
 import logging
+import os
+import pickle
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
+import faiss
 
 # Add project root to path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from auto_job_apply.rag.retriever import VectorRetriever
-from auto_job_apply.rag.embedder import TextEmbedder
+from auto_job_apply.rag.vector_store import JobVectorStore
 from auto_job_apply.rag.ingest import ingest_jobs
 
 # Configure logging
@@ -25,17 +27,60 @@ router = APIRouter()
 VECTOR_STORE_PATH = Path("data/vector_store/job_descriptions.pkl")
 VECTOR_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-# Initialize components
-embedder = TextEmbedder()
-retriever = None
+# Initialize vector store
+vector_store = None
 
-# Load retriever if vector store exists
-if VECTOR_STORE_PATH.exists():
-    try:
-        retriever = VectorRetriever.load(VECTOR_STORE_PATH, embedder)
-        logger.info(f"Loaded vector store with {len(retriever.metadata) if retriever else 0} jobs")
-    except Exception as e:
-        logger.error(f"Failed to load vector store: {str(e)}")
+def load_or_initialize_vector_store():
+    """Load the vector store from disk or initialize with sample data if empty."""
+    global vector_store
+    
+    # Try to load existing vector store first
+    if VECTOR_STORE_PATH.exists():
+        try:
+            vector_store = JobVectorStore.load(VECTOR_STORE_PATH)
+            if vector_store.job_metadata:  # If we have jobs loaded
+                logger.info(f"Loaded vector store with {len(vector_store.job_metadata)} jobs")
+                return
+            logger.warning("Vector store exists but is empty")
+        except Exception as e:
+            logger.error(f"Failed to load vector store: {str(e)}")
+    
+    # If we get here, either the file doesn't exist, loading failed, or it was empty
+    logger.info("Initializing a new vector store with default settings")
+    vector_store = JobVectorStore(model_name='BAAI/bge-small-en-v1.5')
+    
+    # Check if sample job descriptions exist
+    sample_jds_dir = Path("data/sample_jds")
+    if sample_jds_dir.exists() and any(sample_jds_dir.glob("*.txt")):
+        try:
+            logger.info("Loading sample job descriptions...")
+            jobs = ingest_jobs(str(sample_jds_dir), file_ext=".txt")
+            if jobs:
+                # Clear any existing data
+                vector_store.job_metadata = []
+                vector_store.index = None
+                
+                # Add jobs in batches to avoid memory issues
+                batch_size = 5  # Smaller batch size to avoid memory issues
+                for i in range(0, len(jobs), batch_size):
+                    batch = jobs[i:i+batch_size]
+                    vector_store.add_jobs(
+                        [job["text"] for job in batch],
+                        [{"source": job.get("source", "sample"), "filename": job.get("filename", "")} for job in batch]
+                    )
+                
+                # Save the vector store
+                vector_store.save(VECTOR_STORE_PATH)
+                logger.info(f"Successfully loaded {len(jobs)} sample job descriptions")
+        except Exception as e:
+            logger.error(f"Failed to load sample job descriptions: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+    else:
+        logger.warning(f"No sample job descriptions found in {sample_jds_dir}")
+
+# Initialize the vector store
+load_or_initialize_vector_store()
 
 # Models
 class JobMatch(BaseModel):
@@ -65,18 +110,18 @@ async def match_jobs(request: JobMatchRequest):
     """
     Find job descriptions that match the given resume text.
     """
-    if not retriever:
+    if not vector_store:
         raise HTTPException(
             status_code=503,
             detail="Vector store not initialized. Please ingest job descriptions first."
         )
     
     try:
-        # Get matches from the retriever
-        results = retriever.similarity_search(
+        # Get matches from the vector store
+        results = vector_store.get_similar_jobs(
             query=request.resume_text,
             k=request.top_k,
-            score_threshold=request.score_threshold
+            threshold=request.score_threshold
         )
         
         # Format results
@@ -95,31 +140,43 @@ async def match_jobs(request: JobMatchRequest):
         # Get query embedding if needed
         query_embedding = None
         if request.include_embeddings:
-            query_embedding = embedder.embed_texts([request.resume_text])[0].tolist()
+            query_embedding = vector_store.model.encode(
+                [request.resume_text], 
+                convert_to_tensor=False
+            )[0].tolist()
         
         return {
             "matches": matches,
             "query_embedding": query_embedding
         }
-        
     except Exception as e:
-        logger.error(f"Error matching jobs: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error matching jobs: {str(e)}")
+        logger.error(f"Error in job matching: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-def _ingest_jobs_background(directory: str, file_ext: str):
+async def _ingest_jobs_background(directory: str, file_ext: str):
     """Background task for ingesting job descriptions."""
-    global retriever
+    global vector_store
     try:
-        retriever = ingest_jobs(
-            input_dir=directory,
-            output_path=str(VECTOR_STORE_PATH),
-            file_ext=file_ext,
-            embedder=embedder
+        # Ingest jobs from directory
+        jobs = ingest_jobs(directory, file_ext=file_ext)
+        
+        # Create or update vector store
+        if vector_store is None:
+            vector_store = JobVectorStore()
+        
+        # Add jobs to vector store
+        vector_store.add_jobs(
+            job_texts=[job["text"] for job in jobs],
+            metadata_list=jobs
         )
+        
+        # Save vector store
+        vector_store.save(VECTOR_STORE_PATH)
+        logger.info(f"Ingested {len(jobs)} job descriptions")
         return {
             "success": True,
-            "message": f"Successfully ingested jobs from {directory}",
-            "num_jobs": len(retriever.metadata) if retriever else 0
+            "message": f"Ingested {len(jobs)} job descriptions",
+            "num_jobs": len(jobs)
         }
     except Exception as e:
         logger.error(f"Error ingesting jobs: {str(e)}")
